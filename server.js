@@ -14,7 +14,7 @@ require('dotenv').config({ path: './config.env' });
 mongoose.connect('mongodb://localhost:27017/chatapp')
 .then(
     (conn) => {
-        console.log('MongoDB Connection successful:\nHost:',conn.connections[0].host,'\nPort:',conn.connections[0].port,'\nDatabase Name:',conn.connections[0].name);
+        console.log('MongoDB Connection successful.\nHost:',conn.connections[0].host,'\nPort:',conn.connections[0].port,'\nDatabase Name:',conn.connections[0].name);
     }
 )
     .catch(err => console.error('MongoDB connection error: ', err));
@@ -29,7 +29,7 @@ mongoose.connect('mongodb://localhost:27017/chatapp')
 //         useNewUrlParser: true, // The underlying MongoDB driver has deprecated their current connection string parser. Because this is a major change, they added the useNewUrlParser flag to allow users to fall back to the old parser if they find a bug in the new parser.
 //         useUnifiedTopology: true, // Set to true to opt in to using the MongoDB driver's new connection management engine. You should set this option to true , except for the unlikely case that it prevents you from maintaining a stable connection.
 //     }).then((conn) => {
-//         console.log('MongoDB Connection successful:\nHost:',conn.connections[0].host,'\nPort:',conn.connections[0].port,'\nDatabase Name:',conn.connections[0].name);
+//         console.log('MongoDB Connection successful.\nHost:',conn.connections[0].host,'\nPort:',conn.connections[0].port,'\nDatabase Name:',conn.connections[0].name);
 //     })
 //     .catch(err => console.error('MongoDB connection error: ', err));
 
