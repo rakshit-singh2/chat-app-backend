@@ -9,6 +9,7 @@ const swaggerJsdoc = require('swagger-jsdoc');
 const morgan = require('morgan')
 const mongosanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
+const routes = require("./routes/index");
 
 const app = express();
 
@@ -59,5 +60,7 @@ if (process.env.NODE_ENV === "development") {
 app.use(mongosanitize());
 
 app.use(xss());
+
+app.use(routes);
 
 module.exports = app;
