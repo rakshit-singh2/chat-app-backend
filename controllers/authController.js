@@ -17,6 +17,8 @@ const signToken = (userId) => jwt.sign({ userId }, process.env.JWT_SECRET);
 
 // Register New User
 
+
+
 exports.register = catchAsync(async (req, res, next) => {
   const { firstName, lastName, email, password } = req.body;
 
@@ -81,7 +83,7 @@ exports.sendOTP = catchAsync(async (req, res, next) => {
 
   // TODO send mail
   mailService.sendEmail({
-    from: "a2fsharma@gmail.com",
+    from: "shreyanshshah242@gmail.com",
     to: user.email,
     subject: "Verification OTP",
     html: otp(user.firstName, new_otp),
@@ -250,7 +252,7 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
     console.log(resetURL);
 
     mailService.sendEmail({
-      from: "a2fsharma@gmail.com",
+      from: "shreyanshshah242@gmail.com",
       to: user.email,
       subject: "Reset Password",
       html: resetPassword(user.firstName, resetURL),
