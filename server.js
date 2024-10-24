@@ -54,6 +54,7 @@ mongoose.connect('mongodb://localhost:27017/chatapp')
 const PORT = process.env.PORT || 8000;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`Go to http://localhost:${PORT}/api-docs/ to see swagger testing interface.`);
 });
 
 io.on("connection", async (socket) => {
