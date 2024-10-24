@@ -15,6 +15,34 @@ const appID = process.env.ZEGO_APP_ID; // type: number
 // Example：'sdfsdfsd323sdfsdf'
 const serverSecret = process.env.ZEGO_SERVER_SECRET; // type: 32 byte length string
 
+/**
+ * @swagger
+ * /user/get-me:
+ *   get:
+ *     summary: Get current user information
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved user information
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   description: User object
+ *               example:
+ *                 status: "success"
+ *                 data:
+ *                   id: "user_id"
+ *                   firstName: "John"
+ *                   lastName: "Doe"
+ */
 exports.getMe = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: "success",
@@ -22,6 +50,50 @@ exports.getMe = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * @swagger
+ * /user/update-me:
+ *   patch:
+ *     summary: Update current user information
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               firstName:
+ *                 type: string
+ *               lastName:
+ *                 type: string
+ *               about:
+ *                 type: string
+ *               avatar:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Successfully updated user information
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   description: Updated user object
+ *               example:
+ *                 status: "success"
+ *                 message: "User Updated successfully"
+ *                 data:
+ *                   id: "user_id"
+ *                   firstName: "John"
+ *                   lastName: "Doe"
+ */
 exports.updateMe = catchAsync(async (req, res, next) => {
   const filteredBody = filterObj(
     req.body,
@@ -40,6 +112,48 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * @swagger
+ * /user/get-users:
+ *   get:
+ *     summary: Get all users except current user's friends and self
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved users
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       firstName:
+ *                         type: string
+ *                       lastName:
+ *                         type: string
+ *                 message:
+ *                   type: string
+ *               example:
+ *                 status: "success"
+ *                 message: "Users found successfully!"
+ *                 data:
+ *                   - _id: "user_id_1"
+ *                     firstName: "Jane"
+ *                     lastName: "Smith"
+ *                   - _id: "user_id_2"
+ *                     firstName: "John"
+ *                     lastName: "Doe"
+ */
 exports.getUsers = catchAsync(async (req, res, next) => {
   const all_users = await User.find({
     verified: true,
@@ -60,6 +174,46 @@ exports.getUsers = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * @swagger
+ * /user/get-all-verified-users:
+ *   get:
+ *     summary: Get all verified users
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved all verified users
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       firstName:
+ *                         type: string
+ *                       lastName:
+ *                         type: string
+ *               example:
+ *                 status: "success"
+ *                 message: "Users found successfully!"
+ *                 data:
+ *                   - _id: "user_id_1"
+ *                     firstName: "Jane"
+ *                     lastName: "Smith"
+ *                   - _id: "user_id_2"
+ *                     firstName: "John"
+ *                     lastName: "Doe"
+ */
 exports.getAllVerifiedUsers = catchAsync(async (req, res, next) => {
   const all_users = await User.find({
     verified: true,
@@ -75,7 +229,48 @@ exports.getAllVerifiedUsers = catchAsync(async (req, res, next) => {
     message: "Users found successfully!",
   });
 });
-
+/**
+ * @swagger
+ * /user/get-requests:
+ *   get:
+ *     summary: Get friend requests received by the current user
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved friend requests
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       firstName:
+ *                         type: string
+ *                       lastName:
+ *                         type: string
+ *                 message:
+ *                   type: string
+ *               example:
+ *                 status: "success"
+ *                 message: "Requests found successfully!"
+ *                 data:
+ *                   - _id: "request_id_1"
+ *                     firstName: "Jane"
+ *                     lastName: "Smith"
+ *                   - _id: "request_id_2"
+ *                     firstName: "John"
+ *                     lastName: "Doe"
+ */
 exports.getRequests = catchAsync(async (req, res, next) => {
   const requests = await FriendRequest.find({ recipient: req.user._id })
     .populate("sender")
@@ -88,6 +283,48 @@ exports.getRequests = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * @swagger
+ * /user/get-friends:
+ *   get:
+ *     summary: Get the list of friends of the current user
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved friends list
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       firstName:
+ *                         type: string
+ *                       lastName:
+ *                         type: string
+ *                 message:
+ *                   type: string
+ *               example:
+ *                 status: "success"
+ *                 message: "Friends found successfully!"
+ *                 data:
+ *                   - _id: "friend_id_1"
+ *                     firstName: "Jane"
+ *                     lastName: "Smith"
+ *                   - _id: "friend_id_2"
+ *                     firstName: "John"
+ *                     lastName: "Doe"
+ */
 exports.getFriends = catchAsync(async (req, res, next) => {
   const this_user = await User.findById(req.user._id).populate(
     "friends",
@@ -104,6 +341,44 @@ exports.getFriends = catchAsync(async (req, res, next) => {
  * Authorization authentication token generation
  */
 
+/**
+ * @swagger
+ * /user/generate-zego-token:
+ *   post:
+ *     summary: Generate Zego authorization token
+ *     tags: [Token]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               userId:
+ *                 type: string
+ *               room_id:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Successfully generated token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *                 token:
+ *                   type: string
+ *               example:
+ *                 status: "success"
+ *                 message: "Token generated successfully"
+ *                 token: "token_value_here"
+ */
 exports.generateZegoToken = catchAsync(async (req, res, next) => {
   try {
     const { userId, room_id } = req.body;
@@ -140,6 +415,52 @@ exports.generateZegoToken = catchAsync(async (req, res, next) => {
   }
 });
 
+/**
+ * @swagger
+ * /user/start-audio-call:
+ *   post:
+ *     summary: Start an audio call
+ *     tags: [Call]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               id:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Successfully started audio call
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     from:
+ *                       type: object
+ *                     roomID:
+ *                       type: string
+ *                     streamID:
+ *                       type: string
+ *                     userID:
+ *                       type: string
+ *                     userName:
+ *                       type: string
+ *               example:
+ *                 data:
+ *                   from: { _id: "to_user_id", firstName: "Jane", lastName: "Smith" }
+ *                   roomID: "room_id"
+ *                   streamID: "stream_id"
+ *                   userID: "from_user_id"
+ *                   userName: "John"
+ */
 exports.startAudioCall = catchAsync(async (req, res, next) => {
   const from = req.user._id;
   const to = req.body.id;
@@ -166,6 +487,53 @@ exports.startAudioCall = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * @swagger
+ * /user/start-video-call:
+ *   post:
+ *     summary: Start a video call
+ *     tags: [Call]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               id:
+ *                 type: string
+ *                 description: The ID of the user to call
+ *     responses:
+ *       200:
+ *         description: Successfully started video call
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     from:
+ *                       type: object
+ *                     roomID:
+ *                       type: string
+ *                     streamID:
+ *                       type: string
+ *                     userID:
+ *                       type: string
+ *                     userName:
+ *                       type: string
+ *               example:
+ *                 data:
+ *                   from: { _id: "to_user_id", firstName: "Jane", lastName: "Smith" }
+ *                   roomID: "room_id"
+ *                   streamID: "stream_id"
+ *                   userID: "from_user_id"
+ *                   userName: "John"
+ */
 exports.startVideoCall = catchAsync(async (req, res, next) => {
   const from = req.user._id;
   const to = req.body.id;
@@ -192,6 +560,60 @@ exports.startVideoCall = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * @swagger
+ * /user/get-call-logs:
+ *   get:
+ *     summary: Get call logs of the current user
+ *     tags: [Call]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved call logs
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       img:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                       online:
+ *                         type: boolean
+ *                       incoming:
+ *                         type: boolean
+ *                       missed:
+ *                         type: boolean
+ *               example:
+ *                 status: "success"
+ *                 message: "Call Logs Found successfully!"
+ *                 data:
+ *                   - id: "call_log_1"
+ *                     img: "avatar_url"
+ *                     name: "Jane"
+ *                     online: true
+ *                     incoming: false
+ *                     missed: false
+ *                   - id: "call_log_2"
+ *                     img: "avatar_url"
+ *                     name: "John"
+ *                     online: true
+ *                     incoming: true
+ *                     missed: true
+ */
 exports.getCallLogs = catchAsync(async (req, res, next) => {
   const user_id = req.user._id;
 

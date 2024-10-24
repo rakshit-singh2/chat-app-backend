@@ -41,9 +41,9 @@ const options = {
     definition: {
         openapi: '3.0.0',
         info: {
-            title: 'User API',
+            title: 'User Management and Call APIs',
             version: '1.0.0',
-            description: 'API documentation with Swagger',
+            description: 'APIs for user management, authentication, and call services',
         },
     },
     // Paths to files with API annotations
