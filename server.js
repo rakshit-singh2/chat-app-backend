@@ -3,7 +3,7 @@ const app = require("./app");
 const http = require("http");
 const server = http.createServer(app);
 require('dotenv').config({ path: './config.env' });
-
+const os = require('os');
 process.on("uncaughtException", (err) => {
     console.log(err);
     console.log("UNCAUGHT Exception! Shutting down ...");
@@ -31,11 +31,11 @@ const VideoCall = require("./models/videoCall");
 mongoose.connect('mongodb://localhost:27017/chatapp')
     .then(
         (conn) => {
-            console.log('MongoDB Connection successful.\nHost:', conn.connections[0].host, '\nDatabase Port:', conn.connections[0].port, '\nDatabase Name:', conn.connections[0].name);
+            console.log('\nMongoDB Connection successful.\nHost:', conn.connections[0].host, '\nDatabase Port:', conn.connections[0].port, '\nDatabase Name:', conn.connections[0].name,'\n');
         }
     )
-    .catch(err => console.error('MongoDB connection error: ', err));
-    
+    .catch(err => console.error('\nMongoDB connection error: ', err,'\n'));
+
 // Connect to MongoDB Online
 // const dbUrl = process.env.DATABASE.replace(
 //     "<PASSWORD>",
@@ -46,15 +46,39 @@ mongoose.connect('mongodb://localhost:27017/chatapp')
 //         useNewUrlParser: true, // The underlying MongoDB driver has deprecated their current connection string parser. Because this is a major change, they added the useNewUrlParser flag to allow users to fall back to the old parser if they find a bug in the new parser.
 //         useUnifiedTopology: true, // Set to true to opt in to using the MongoDB driver's new connection management engine. You should set this option to true , except for the unlikely case that it prevents you from maintaining a stable connection.
 //     }).then((conn) => {
-//         console.log('MongoDB Connection successful.\nHost:',conn.connections[0].host,'\nDatabase Port:',conn.connections[0].port,'\nDatabase Name:',conn.connections[0].name);
+//         console.log('\nMongoDB Connection successful.\nHost:',conn.connections[0].host,'\nDatabase Port:',conn.connections[0].port,'\nDatabase Name:',conn.connections[0].name,'\n');
 //     })
-//     .catch(err => console.error('MongoDB connection error: ', err));
+//     .catch(err => console.error('\nMongoDB connection error: ', err,'\n'));
 
+function getLocalIp() {
+    const interfaces = os.networkInterfaces();
 
+    for (const name of Object.keys(interfaces)) {
+        for (const net of interfaces[name]) {
+            // Skip over non-IPv4 and internal (localhost) addresses
+            if (net.family === 'IPv4' && !net.internal) {
+                return net.address;  // Return the local IP address
+            }
+        }
+    }
+
+    return 'localhost';  // Fallback to localhost if no network interface is found
+}
+
+const HOST = getLocalIp();
 const PORT = process.env.PORT || 8000;
+
+const lightBlue = '\x1b[36m'; // Light blue text
+const red = '\x1b[31m'; // Red text
+const reset = '\x1b[0m'; // Reset to default color
+
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Go to http://localhost:${PORT}/api-docs/ to see swagger testing interface.`);
+    console.log(`Local:   ${lightBlue}http://localhost:${PORT}/${reset}`);
+    console.log(`Network: ${lightBlue}http://${HOST}:${PORT}/${reset}`);
+    console.log(`Swagger: ${lightBlue}http://localhost:${PORT}/api-docs/${reset}`);
+    console.log(`Note:    ${red}You cannot see Swagger interface on Network.${reset}\n`);
+}).on('error', (err) => {
+    console.error('Error starting server:', err);
 });
 
 io.on("connection", async (socket) => {

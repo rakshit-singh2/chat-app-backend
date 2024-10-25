@@ -21,8 +21,14 @@ const serverSecret = process.env.ZEGO_SERVER_SECRET; // type: 32 byte length str
  *   get:
  *     summary: Get current user information
  *     tags: [User]
- *     security:
- *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     responses:
  *       200:
  *         description: Successfully retrieved user information
@@ -36,13 +42,27 @@ const serverSecret = process.env.ZEGO_SERVER_SECRET; // type: 32 byte length str
  *                 data:
  *                   type: object
  *                   description: User object
+ *                   properties:  # Define the properties of the user object here
+ *                     id:
+ *                       type: string
+ *                     firstName:
+ *                       type: string
+ *                     lastName:
+ *                       type: string
  *               example:
  *                 status: "success"
  *                 data:
  *                   id: "user_id"
  *                   firstName: "John"
  *                   lastName: "Doe"
+ * components:
+ *   securitySchemes:  # Define the security scheme for bearer authentication
+ *     bearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT  # Optionally specify the format
  */
+
 exports.getMe = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: "success",
@@ -58,6 +78,14 @@ exports.getMe = catchAsync(async (req, res, next) => {
  *     tags: [User]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     requestBody:
  *       required: true
  *       content:
@@ -120,6 +148,14 @@ exports.updateMe = catchAsync(async (req, res, next) => {
  *     tags: [User]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     responses:
  *       200:
  *         description: Successfully retrieved users
@@ -182,6 +218,14 @@ exports.getUsers = catchAsync(async (req, res, next) => {
  *     tags: [User]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     responses:
  *       200:
  *         description: Successfully retrieved all verified users
@@ -237,6 +281,14 @@ exports.getAllVerifiedUsers = catchAsync(async (req, res, next) => {
  *     tags: [User]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     responses:
  *       200:
  *         description: Successfully retrieved friend requests
@@ -291,6 +343,14 @@ exports.getRequests = catchAsync(async (req, res, next) => {
  *     tags: [User]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication 
  *     responses:
  *       200:
  *         description: Successfully retrieved friends list
@@ -349,6 +409,14 @@ exports.getFriends = catchAsync(async (req, res, next) => {
  *     tags: [Token]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     requestBody:
  *       required: true
  *       content:
@@ -423,6 +491,14 @@ exports.generateZegoToken = catchAsync(async (req, res, next) => {
  *     tags: [Call]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     requestBody:
  *       required: true
  *       content:
@@ -495,6 +571,14 @@ exports.startAudioCall = catchAsync(async (req, res, next) => {
  *     tags: [Call]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     requestBody:
  *       required: true
  *       content:
@@ -568,6 +652,14 @@ exports.startVideoCall = catchAsync(async (req, res, next) => {
  *     tags: [Call]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "Bearer YOUR_TOKEN_HERE"
+ *         description: Bearer token for authentication
  *     responses:
  *       200:
  *         description: Successfully retrieved call logs
