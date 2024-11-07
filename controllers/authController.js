@@ -304,13 +304,13 @@ exports.login = catchAsync(async (req, res, next) => {
 // Protect
 exports.protect = catchAsync(async (req, res, next) => {
   // 1) Getting token and check if it's there
-  console.log("req.headers.authorization",req.headers.authorization)
+  // console.log("req.headers.authorization",req.headers.authorization)
   let token;
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
-    console.log("req.headers.authorization",req.headers.authorization)
+    // console.log("req.headers.authorization",req.headers.authorization)
     token = req.headers.authorization.split(" ")[1];
   } else if (req.cookies.jwt) {
     token = req.cookies.jwt;
