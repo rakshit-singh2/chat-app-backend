@@ -50,7 +50,7 @@ const signToken = (userId) => jwt.sign({ userId }, process.env.JWT_SECRET);
  *         description: Email already in use
  */
 exports.register = catchAsync(async (req, res, next) => {
-  const { firstName, lastName, email, password } = req.body;
+  const { firstName, lastName, email, password } = req.body; //used in filtered body
 
   const filteredBody = filterObj(
     req.body,
@@ -105,14 +105,27 @@ exports.register = catchAsync(async (req, res, next) => {
  *           schema:
  *             type: object
  *             properties:
- *               email:
+ *               userId:
  *                 type: string
+ *                 description: The user ID for whom the OTP is being sent
+ *                 example: "60f71b84f16b8c3a3cf7a8d3"
  *     responses:
  *       200:
  *         description: OTP sent successfully
+ *       400:
+ *         description: Invalid input
+ *       404:
+ *         description: User not found
  */
 exports.sendOTP = catchAsync(async (req, res, next) => {
-  const { userId } = req;
+  const userId = req.userId ?? req.body.userId;//
+
+  if (!userId) {
+    return res.status(400).json({
+      status: "fail",
+      message: "User ID is missing",
+    });
+  }
   const new_otp = otpGenerator.generate(6, {
     upperCaseAlphabets: false,
     specialChars: false,
