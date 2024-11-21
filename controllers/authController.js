@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const otpGenerator = require("otp-generator");
 const mailService = require("../services/mailer");
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 
 const filterObj = require("../utils/filterObj");
 
@@ -70,8 +71,10 @@ exports.register = catchAsync(async (req, res, next) => {
       message: "Email already in use, Please login.",
     });
   } else if (existing_user) {
+    if (filteredBody.password) {
+      filteredBody.password = await bcrypt.hash(filteredBody.password, 12);
+    }
     // if not verified than update prev one
-
     await User.findOneAndUpdate({ email: email }, filteredBody, {
       new: true,
       validateModifiedOnly: true,
@@ -130,7 +133,7 @@ exports.sendOTP = catchAsync(async (req, res, next) => {
 
   // TODO send mail
   mailService.sendEmail({
-    from: "shreyanshshah242@gmail.com",
+    from: "a2fsharma@gmail.com",
     to: user.email,
     subject: "Verification OTP",
     html: otp(user.firstName, new_otp),
@@ -390,7 +393,7 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
     // console.log(resetURL);
 
     mailService.sendEmail({
-      from: "shreyanshshah242@gmail.com",
+      from: "a2fsharma@gmail.com",
       to: user.email,
       subject: "Reset Password",
       html: resetPassword(user.firstName, resetURL),
