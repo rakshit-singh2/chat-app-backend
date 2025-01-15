@@ -1,8 +1,13 @@
 const mongoose = require("mongoose");
 const app = require("./app");
 const http = require("http");
-const server = http.createServer(app);
 require('dotenv').config({ path: './config.env' });
+
+const path =require("path")
+
+const { Server } = require("socket.io");
+
+const server = http.createServer(app);
 const os = require('os');
 process.on("uncaughtException", (err) => {
     console.log(err);
@@ -10,7 +15,6 @@ process.on("uncaughtException", (err) => {
     process.exit(1); // Exit Code 1 indicates that a container shut down, either because of an application failure.
 });
 
-const { Server } = require("socket.io");
 const { promisify } = require("util");
 
 // Create an io server and allow for CORS from http://localhost:3000 with GET and POST methods
