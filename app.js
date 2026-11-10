@@ -1,66 +1,66 @@
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
-const bodyParser = require("body-parser");
 const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
+const { apiLimiter } = require("./utils/rateLimiters");
+const { redisHealth } = require("./services/redis");
 const swaggerUi = require("swagger-ui-express");
-const swaggerJsdoc = require('swagger-jsdoc');
 const morgan = require('morgan')
-const mongosanitize = require("express-mongo-sanitize");
-const xss = require("xss-clean");
+const sanitizeRequest = require("./utils/sanitizeRequest");
+const errorHandler = require("./utils/errorHandler");
 const routes = require("./routes/index");
 
 const app = express();
 
-app.use(
-    cors({
-        origin: "*",
-        methods: ["GET", "PATCH", "POST", "DELETE", "PUT"],
-        credentials: true,
-    })
-);
+// Behind a load balancer / reverse proxy, set TRUST_PROXY (e.g. 1) so req.ip,
+// rate limits and secure cookies use the real client address and protocol.
+if (process.env.TRUST_PROXY) {
+    const value = process.env.TRUST_PROXY;
+    app.set("trust proxy", /^\d+$/.test(value) ? Number(value) : value === "true" ? true : value);
+}
+app.disable("x-powered-by");
+
+const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173")
+    .split(",")
+    .map((origin) => origin.trim());
+if (process.env.NODE_ENV !== "development" && !process.env.CORS_ORIGINS) {
+    throw new Error("CORS_ORIGINS must be configured outside development");
+}
+
+app.use(cors({
+    origin: allowedOrigins,
+    methods: ["GET", "PATCH", "POST", "DELETE", "PUT"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Client-Type"],
+    credentials: true,
+}));
 
 app.use(cookieParser());
-app.use(express.json({ limit: "10kb" })); // Controls the maximum request body size. If this is a number, then the value specifies the number of bytes; if it is a string, the value is passed to the bytes library for parsing. Defaults to '100kb'.
-app.use(bodyParser.json()); // Returns middleware that only parses json
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.json({ limit: "10kb" }));
+app.use(express.urlencoded({ extended: true }));
 
 app.use(helmet());
 
-const limiter = rateLimit({
-    max: 3000,
-    windowMs: 60 * 60 * 1000, // In one hour
-    message: "Too many Requests from this IP, please try again in an hour!",
-});
+app.use(apiLimiter);
 
-app.use("/tawk", limiter);
-
-// Swagger options
-const options = {
-    definition: {
-        openapi: '3.0.0',
-        info: {
-            title: 'User Management and Call APIs',
-            version: '1.0.0',
-            description: 'APIs for user management, authentication, and call services',
-        },
-    },
-    // Paths to files with API annotations
-    apis: ['./controllers/*.js', './routes/*.js'],
-};
-
-const specs = swaggerJsdoc(options);
+const specs = require("./docs/openapi");
 
 if (process.env.NODE_ENV === "development") {
     app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs));
     app.use(morgan("dev"));
 }
 
-app.use(mongosanitize());
+// Strip MongoDB operators and XSS payloads (Express 5 compatible).
+app.use(sanitizeRequest());
 
-app.use(xss());
+app.get("/health", async (req, res) => {
+  const redis = await redisHealth();
+  res.status(redis === "error" ? 503 : 200).json({ status: redis === "error" ? "degraded" : "ok", redis });
+});
 
 app.use(routes);
+
+app.use((req, res) => res.status(404).json({ status: "fail", code: "NOT_FOUND", message: "Route not found." }));
+
+app.use(errorHandler);
 
 module.exports = app;

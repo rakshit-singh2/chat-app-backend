@@ -11,9 +11,12 @@ const requestSchema = new mongoose.Schema({
   },
   createdAt: {
     type: Date,
-    default: Date.now(),
+    default: Date.now,
   },
 });
 
-const FriendRequest = new mongoose.model("FriendRequest", requestSchema);
+requestSchema.index({ sender: 1, recipient: 1 }, { unique: true });
+requestSchema.index({ recipient: 1 });
+
+const FriendRequest = mongoose.model("FriendRequest", requestSchema);
 module.exports = FriendRequest;

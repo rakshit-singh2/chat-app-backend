@@ -2,66 +2,25 @@ const AudioCall = require("../models/audioCall");
 const FriendRequest = require("../models/friendRequest");
 const User = require("../models/user");
 const VideoCall = require("../models/videoCall");
+const mongoose = require("mongoose");
 const catchAsync = require("../utils/catchAsync");
 const filterObj = require("../utils/filterObj");
+const AppError = require("../utils/AppError");
+const {
+  getCallProvider,
+  getCallProviderInfo,
+  createCallCredentials,
+} = require("../services/callProvider");
+const { prepareRoom } = require("../services/mediasoupServer");
+const { createUploadUrl, createDownloadUrl } = require("../services/objectStorage");
+const OneToOneMessage = require("../models/OneToOneMessage");
+const Group = require("../models/group");
+const Notification = require("../models/notification");
+const PushSubscription = require("../models/pushSubscription");
+const { isPushConfigured, listNotifications } = require("../services/notificationService");
 
-const { generateToken04 } = require("./zegoServerAssistant");
+const includesId = (list = [], id) => list.some((item) => String(item?._id ?? item) === String(id));
 
-// Please change appID to your appId, appid is a number
-// Example: 1234567890
-const appID = process.env.ZEGO_APP_ID; // type: number
-
-// Please change serverSecret to your serverSecret, serverSecret is string
-// Example：'sdfsdfsd323sdfsdf'
-const serverSecret = process.env.ZEGO_SERVER_SECRET; // type: 32 byte length string
-
-/**
- * @swagger
- * /user/get-me:
- *   get:
- *     summary: Get current user information
- *     tags: [User]
- *     parameters:
- *       - in: header
- *         name: authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     responses:
- *       200:
- *         description: Successfully retrieved user information
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: object
- *                   description: User object
- *                   properties:  # Define the properties of the user object here
- *                     id:
- *                       type: string
- *                     firstName:
- *                       type: string
- *                     lastName:
- *                       type: string
- *               example:
- *                 status: "success"
- *                 data:
- *                   id: "user_id"
- *                   firstName: "John"
- *                   lastName: "Doe"
- * components:
- *   securitySchemes:  # Define the security scheme for bearer authentication
- *     bearerAuth:
- *       type: http
- *       scheme: bearer
- *       bearerFormat: JWT  # Optionally specify the format
- */
 
 exports.getMe = catchAsync(async (req, res, next) => {
   res.status(200).json({
@@ -70,58 +29,86 @@ exports.getMe = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * @swagger
- * /user/update-me:
- *   patch:
- *     summary: Update current user information
- *     tags: [User]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               firstName:
- *                 type: string
- *               lastName:
- *                 type: string
- *               about:
- *                 type: string
- *               avatar:
- *                 type: string
- *     responses:
- *       200:
- *         description: Successfully updated user information
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: object
- *                   description: Updated user object
- *               example:
- *                 status: "success"
- *                 message: "User Updated successfully"
- *                 data:
- *                   id: "user_id"
- *                   firstName: "John"
- *                   lastName: "Doe"
- */
+exports.createChatAttachmentUploadUrl = catchAsync(async (req, res) => {
+    const { fileName, contentType, contentLength } = req.body;
+    if (
+      typeof fileName !== "string" ||
+      !fileName.trim() ||
+      !Number.isInteger(contentLength) ||
+      contentLength < 1 ||
+      contentLength > 25 * 1024 * 1024
+    ) {
+      return res.status(400).json({
+        status: "error",
+        message: "A file name and a file between 1 byte and 25 MB are required.",
+      });
+    }
+
+    const { key, uploadUrl } = await createUploadUrl({
+      userId: req.user._id.toString(),
+      fileName,
+      contentType,
+      contentLength,
+      purpose: "chat",
+    });
+
+    res.status(200).json({ status: "success", data: { key, uploadUrl } });
+  });
+
+exports.createAvatarUploadUrl = catchAsync(async (req, res) => {
+    const { fileName, contentType, contentLength } = req.body;
+    if (
+      typeof fileName !== "string" ||
+      !fileName.trim() ||
+      !["image/gif", "image/jpeg", "image/png", "image/webp"].includes(contentType) ||
+      !Number.isInteger(contentLength) ||
+      contentLength < 1 ||
+      contentLength > 3 * 1024 * 1024
+    ) {
+      return res.status(400).json({
+        status: "error",
+        message: "Choose a supported image that is 3 MB or smaller.",
+      });
+    }
+
+    const { key, uploadUrl } = await createUploadUrl({
+      userId: req.user._id.toString(),
+      fileName,
+      contentType,
+      contentLength,
+      purpose: "avatars",
+    });
+    res.status(200).json({ status: "success", data: { key, uploadUrl } });
+  });
+
+exports.createChatAttachmentDownloadUrl = catchAsync(async (req, res) => {
+    const { conversationId, key, chatType } = req.body;
+    if (!mongoose.isValidObjectId(conversationId)) {
+      return res.status(404).json({ status: "error", message: "Attachment not found." });
+    }
+    const conversation = chatType === "group"
+      ? await Group.findOne({
+          _id: conversationId,
+          members: req.user._id,
+          messages: { $elemMatch: { file: key } },
+        }).select("_id")
+      : await OneToOneMessage.findOne({
+          _id: conversationId,
+          participants: req.user._id,
+          messages: { $elemMatch: { file: key } },
+        }).select("_id");
+
+    if (!conversation || typeof key !== "string" || !key.startsWith("chat/")) {
+      return res.status(404).json({
+        status: "error",
+        message: "Attachment not found.",
+      });
+    }
+
+    const url = await createDownloadUrl(key);
+    res.status(200).json({ status: "success", data: { url } });
+});
+
 exports.updateMe = catchAsync(async (req, res, next) => {
   const filteredBody = filterObj(
     req.body,
@@ -131,7 +118,20 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     "avatar"
   );
 
-  const userDoc = await User.findByIdAndUpdate(req.user._id, filteredBody);
+  // Only accept avatar keys issued to this user by /user/avatar-upload-url.
+  if (
+    filteredBody.avatar !== undefined &&
+    (typeof filteredBody.avatar !== "string" ||
+      !filteredBody.avatar.startsWith(`avatars/${req.user._id}/`) ||
+      filteredBody.avatar.includes(".."))
+  ) {
+    throw new AppError("Invalid avatar.", 400, "INVALID_AVATAR");
+  }
+
+  const userDoc = await User.findByIdAndUpdate(req.user._id, filteredBody, {
+    new: true,
+    runValidators: true,
+  });
 
   res.status(200).json({
     status: "success",
@@ -140,68 +140,29 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * @swagger
- * /user/get-users:
- *   get:
- *     summary: Get all users except current user's friends and self
- *     tags: [User]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     responses:
- *       200:
- *         description: Successfully retrieved users
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       _id:
- *                         type: string
- *                       firstName:
- *                         type: string
- *                       lastName:
- *                         type: string
- *                 message:
- *                   type: string
- *               example:
- *                 status: "success"
- *                 message: "Users found successfully!"
- *                 data:
- *                   - _id: "user_id_1"
- *                     firstName: "Jane"
- *                     lastName: "Smith"
- *                   - _id: "user_id_2"
- *                     firstName: "John"
- *                     lastName: "Doe"
- */
+// Users you can send a friend request to: verified, not you, not already a
+// friend. `request` is "sent" or "received" when a request is pending.
 exports.getUsers = catchAsync(async (req, res, next) => {
-  const all_users = await User.find({
-    verified: true,
-  }).select("firstName lastName _id");
+  const me = String(req.user._id);
+  const friendIds = new Set(req.user.friends.map(String));
 
-  const this_user = req.user;
+  const [all_users, pending] = await Promise.all([
+    User.find({
+      verified: true,
+      _id: { $ne: req.user._id, $nin: req.user.blocked || [] },
+      blocked: { $ne: req.user._id },
+    }).select("firstName lastName avatar status _id"),
+    FriendRequest.find({ $or: [{ sender: me }, { recipient: me }] }).select("sender recipient"),
+  ]);
+  const requestState = new Map();
+  for (const request of pending) {
+    if (String(request.sender) === me) requestState.set(String(request.recipient), "sent");
+    else requestState.set(String(request.sender), "received");
+  }
 
-  const remaining_users = all_users.filter(
-    (user) =>
-      !this_user.friends.includes(user._id) &&
-      user._id.toString() !== req.user._id.toString()
-  );
+  const remaining_users = all_users
+    .filter((user) => !friendIds.has(String(user._id)))
+    .map((user) => ({ ...user.toJSON(), request: requestState.get(String(user._id)) || null }));
 
   res.status(200).json({
     status: "success",
@@ -210,54 +171,6 @@ exports.getUsers = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * @swagger
- * /user/get-all-verified-users:
- *   get:
- *     summary: Get all verified users
- *     tags: [User]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     responses:
- *       200:
- *         description: Successfully retrieved all verified users
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       _id:
- *                         type: string
- *                       firstName:
- *                         type: string
- *                       lastName:
- *                         type: string
- *               example:
- *                 status: "success"
- *                 message: "Users found successfully!"
- *                 data:
- *                   - _id: "user_id_1"
- *                     firstName: "Jane"
- *                     lastName: "Smith"
- *                   - _id: "user_id_2"
- *                     firstName: "John"
- *                     lastName: "Doe"
- */
 exports.getAllVerifiedUsers = catchAsync(async (req, res, next) => {
   const all_users = await User.find({
     verified: true,
@@ -273,60 +186,10 @@ exports.getAllVerifiedUsers = catchAsync(async (req, res, next) => {
     message: "Users found successfully!",
   });
 });
-/**
- * @swagger
- * /user/get-requests:
- *   get:
- *     summary: Get friend requests received by the current user
- *     tags: [User]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     responses:
- *       200:
- *         description: Successfully retrieved friend requests
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       _id:
- *                         type: string
- *                       firstName:
- *                         type: string
- *                       lastName:
- *                         type: string
- *                 message:
- *                   type: string
- *               example:
- *                 status: "success"
- *                 message: "Requests found successfully!"
- *                 data:
- *                   - _id: "request_id_1"
- *                     firstName: "Jane"
- *                     lastName: "Smith"
- *                   - _id: "request_id_2"
- *                     firstName: "John"
- *                     lastName: "Doe"
- */
 exports.getRequests = catchAsync(async (req, res, next) => {
   const requests = await FriendRequest.find({ recipient: req.user._id })
-    .populate("sender")
-    .select("_id firstName lastName");
+    .sort({ createdAt: -1 })
+    .populate("sender", "_id firstName lastName avatar status");
 
   res.status(200).json({
     status: "success",
@@ -335,60 +198,10 @@ exports.getRequests = catchAsync(async (req, res, next) => {
   });
 });
 
-/**
- * @swagger
- * /user/get-friends:
- *   get:
- *     summary: Get the list of friends of the current user
- *     tags: [User]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication 
- *     responses:
- *       200:
- *         description: Successfully retrieved friends list
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       _id:
- *                         type: string
- *                       firstName:
- *                         type: string
- *                       lastName:
- *                         type: string
- *                 message:
- *                   type: string
- *               example:
- *                 status: "success"
- *                 message: "Friends found successfully!"
- *                 data:
- *                   - _id: "friend_id_1"
- *                     firstName: "Jane"
- *                     lastName: "Smith"
- *                   - _id: "friend_id_2"
- *                     firstName: "John"
- *                     lastName: "Doe"
- */
 exports.getFriends = catchAsync(async (req, res, next) => {
   const this_user = await User.findById(req.user._id).populate(
     "friends",
-    "_id firstName lastName"
+    "_id firstName lastName avatar status lastSeen"
   );
   res.status(200).json({
     status: "success",
@@ -402,10 +215,9 @@ exports.getFriends = catchAsync(async (req, res, next) => {
  */
 
 /**
- * @swagger
- * /user/generate-zego-token:
+ * Legacy call-token endpoint removed
  *   post:
- *     summary: Generate Zego authorization token
+ *     summary: Generate call authorization token
  *     tags: [Token]
  *     security:
  *       - bearerAuth: []
@@ -447,102 +259,81 @@ exports.getFriends = catchAsync(async (req, res, next) => {
  *                 message: "Token generated successfully"
  *                 token: "token_value_here"
  */
-exports.generateZegoToken = catchAsync(async (req, res, next) => {
-  try {
-    const { userId, room_id } = req.body;
-
-    console.log(userId, room_id, "from generate zego token");
-
-    const effectiveTimeInSeconds = 3600; //type: number; unit: s; token expiration time, unit: second
-    const payloadObject = {
-      room_id, // Please modify to the user's roomID
-      // The token generated allows loginRoom (login room) action
-      // The token generated in this example allows publishStream (push stream) action
-      privilege: {
-        1: 1, // loginRoom: 1 pass , 0 not pass
-        2: 1, // publishStream: 1 pass , 0 not pass
-      },
-      stream_id_list: null,
-    }; //
-    const payload = JSON.stringify(payloadObject);
-    // Build token
-    const token = generateToken04(
-      appID * 1, // APP ID NEEDS TO BE A NUMBER
-      userId,
-      serverSecret,
-      effectiveTimeInSeconds,
-      payload
-    );
-    res.status(200).json({
-      status: "success",
-      message: "Token generated successfully",
-      token,
-    });
-  } catch (err) {
-    console.log(err);
-  }
+exports.getCallProvider = catchAsync(async (_req, res) => {
+  res.status(200).json({
+    status: "success",
+    data: getCallProviderInfo(),
+  });
 });
 
-/**
- * @swagger
- * /user/start-audio-call:
- *   post:
- *     summary: Start an audio call
- *     tags: [Call]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               id:
- *                 type: string
- *     responses:
- *       200:
- *         description: Successfully started audio call
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 data:
- *                   type: object
- *                   properties:
- *                     from:
- *                       type: object
- *                     roomID:
- *                       type: string
- *                     streamID:
- *                       type: string
- *                     userID:
- *                       type: string
- *                     userName:
- *                       type: string
- *               example:
- *                 data:
- *                   from: { _id: "to_user_id", firstName: "Jane", lastName: "Smith" }
- *                   roomID: "room_id"
- *                   streamID: "stream_id"
- *                   userID: "from_user_id"
- *                   userName: "John"
- */
+exports.getCallCredentials = catchAsync(async (req, res) => {
+  const { callId } = req.body;
+  if (!mongoose.isValidObjectId(callId)) {
+    throw new AppError("A valid call ID is required.", 400);
+  }
+
+  let call = await AudioCall.findById(callId);
+  if (!call) call = await VideoCall.findById(callId);
+  if (
+    !call ||
+    call.status !== "Ongoing" ||
+    !call.participants.some((participant) => String(participant) === String(req.user._id))
+  ) {
+    throw new AppError("Call not found or access is not permitted.", 404);
+  }
+
+  const provider = call.provider || getCallProvider();
+  const credentials = await createCallCredentials({
+    provider,
+    roomId: String(call._id),
+    userId: String(req.user._id),
+    userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || String(req.user._id),
+  });
+  res.status(200).json({ status: "success", data: credentials });
+});
+
+async function validateCallProviderConfiguration(provider, user, roomId) {
+  await createCallCredentials({
+    provider,
+    roomId,
+    userId: String(user._id),
+    userName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || String(user._id),
+  });
+}
+
+async function prepareMediasoupCall(provider, call, Model) {
+  if (provider !== "MEDIASOUP") return;
+  try {
+    await prepareRoom(String(call._id));
+  } catch (error) {
+    await Model.findByIdAndUpdate(call._id, {
+      verdict: "Busy",
+      status: "Ended",
+      endedAt: Date.now(),
+    });
+    throw error;
+  }
+}
+
 exports.startAudioCall = catchAsync(async (req, res, next) => {
   const from = req.user._id;
   const to = req.body.id;
-
-  const from_user = await User.findById(from);
-  const to_user = await User.findById(to);
+  if (!mongoose.isValidObjectId(to) || String(to) === String(from)) {
+    throw new AppError("A valid call recipient is required.", 400);
+  }
+  const [from_user, to_user] = await Promise.all([
+    User.findById(from).select("firstName lastName avatar friends blocked"),
+    User.findById(to).select("firstName lastName avatar blocked"),
+  ]);
+  if (!from_user || !to_user) throw new AppError("Call participant not found.", 404);
+  if (!from_user.friends.some((friend) => String(friend) === String(to))) {
+    throw new AppError("Calls are only available between friends.", 403);
+  }
+  if (includesId(from_user.blocked, to) || includesId(to_user.blocked, from)) {
+    throw new AppError("You can't call this user.", 403, "BLOCKED");
+  }
+  const provider = getCallProvider();
+  await validateCallProviderConfiguration(provider, from_user, "provider-validation");
 
   // create a new call audioCall Doc and send required data to client
   const new_audio_call = await AudioCall.create({
@@ -550,80 +341,42 @@ exports.startAudioCall = catchAsync(async (req, res, next) => {
     from,
     to,
     status: "Ongoing",
+    provider,
   });
+  await prepareMediasoupCall(provider, new_audio_call, AudioCall);
 
   res.status(200).json({
     data: {
-      from: to_user,
-      roomID: new_audio_call._id,
-      streamID: to,
+      from_user: to_user,
+      callId: String(new_audio_call._id),
+      roomID: String(new_audio_call._id),
+      provider,
       userID: from,
-      userName: from,
+      peerID: to,
+      userName: `${from_user.firstName} ${from_user.lastName}`.trim(),
     },
   });
 });
 
-/**
- * @swagger
- * /user/start-video-call:
- *   post:
- *     summary: Start a video call
- *     tags: [Call]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               id:
- *                 type: string
- *                 description: The ID of the user to call
- *     responses:
- *       200:
- *         description: Successfully started video call
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 data:
- *                   type: object
- *                   properties:
- *                     from:
- *                       type: object
- *                     roomID:
- *                       type: string
- *                     streamID:
- *                       type: string
- *                     userID:
- *                       type: string
- *                     userName:
- *                       type: string
- *               example:
- *                 data:
- *                   from: { _id: "to_user_id", firstName: "Jane", lastName: "Smith" }
- *                   roomID: "room_id"
- *                   streamID: "stream_id"
- *                   userID: "from_user_id"
- *                   userName: "John"
- */
 exports.startVideoCall = catchAsync(async (req, res, next) => {
   const from = req.user._id;
   const to = req.body.id;
-
-  const from_user = await User.findById(from);
-  const to_user = await User.findById(to);
+  if (!mongoose.isValidObjectId(to) || String(to) === String(from)) {
+    throw new AppError("A valid call recipient is required.", 400);
+  }
+  const [from_user, to_user] = await Promise.all([
+    User.findById(from).select("firstName lastName avatar friends blocked"),
+    User.findById(to).select("firstName lastName avatar blocked"),
+  ]);
+  if (!from_user || !to_user) throw new AppError("Call participant not found.", 404);
+  if (!from_user.friends.some((friend) => String(friend) === String(to))) {
+    throw new AppError("Calls are only available between friends.", 403);
+  }
+  if (includesId(from_user.blocked, to) || includesId(to_user.blocked, from)) {
+    throw new AppError("You can't call this user.", 403, "BLOCKED");
+  }
+  const provider = getCallProvider();
+  await validateCallProviderConfiguration(provider, from_user, "provider-validation");
 
   // create a new call videoCall Doc and send required data to client
   const new_video_call = await VideoCall.create({
@@ -631,159 +384,225 @@ exports.startVideoCall = catchAsync(async (req, res, next) => {
     from,
     to,
     status: "Ongoing",
+    provider,
   });
+  await prepareMediasoupCall(provider, new_video_call, VideoCall);
 
   res.status(200).json({
     data: {
-      from: to_user,
-      roomID: new_video_call._id,
-      streamID: to,
+      from_user: to_user,
+      callId: String(new_video_call._id),
+      roomID: String(new_video_call._id),
+      provider,
       userID: from,
-      userName: from,
+      peerID: to,
+      userName: `${from_user.firstName} ${from_user.lastName}`.trim(),
     },
   });
 });
 
-/**
- * @swagger
- * /user/get-call-logs:
- *   get:
- *     summary: Get call logs of the current user
- *     tags: [Call]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *           example: "Bearer YOUR_TOKEN_HERE"
- *         description: Bearer token for authentication
- *     responses:
- *       200:
- *         description: Successfully retrieved call logs
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 message:
- *                   type: string
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       id:
- *                         type: string
- *                       img:
- *                         type: string
- *                       name:
- *                         type: string
- *                       online:
- *                         type: boolean
- *                       incoming:
- *                         type: boolean
- *                       missed:
- *                         type: boolean
- *               example:
- *                 status: "success"
- *                 message: "Call Logs Found successfully!"
- *                 data:
- *                   - id: "call_log_1"
- *                     img: "avatar_url"
- *                     name: "Jane"
- *                     online: true
- *                     incoming: false
- *                     missed: false
- *                   - id: "call_log_2"
- *                     img: "avatar_url"
- *                     name: "John"
- *                     online: true
- *                     incoming: true
- *                     missed: true
- */
-exports.getCallLogs = catchAsync(async (req, res, next) => {
-  const user_id = req.user._id;
+exports.getCallLogs = catchAsync(async (req, res) => {
+  const me = String(req.user._id);
+  const [audio, video] = await Promise.all([
+    AudioCall.find({ participants: req.user._id })
+      .sort({ startedAt: -1 })
+      .limit(100)
+      .populate("from to", "firstName lastName avatar status"),
+    VideoCall.find({ participants: req.user._id })
+      .sort({ startedAt: -1 })
+      .limit(100)
+      .populate("from to", "firstName lastName avatar status"),
+  ]);
 
-  const call_logs = [];
+  const toLog = (call, type) => {
+    const incoming = String(call.from?._id) !== me;
+    const other = incoming ? call.from : call.to;
+    return {
+      id: call._id,
+      type,
+      user_id: other?._id,
+      name: other ? `${other.firstName} ${other.lastName}` : "Unknown user",
+      img: other?.avatar,
+      online: other?.status === "Online",
+      incoming,
+      missed: call.verdict !== "Accepted",
+      verdict: call.verdict || (call.status === "Ongoing" ? "Ongoing" : "Missed"),
+      startedAt: call.startedAt,
+      endedAt: call.endedAt,
+    };
+  };
 
-  const audio_calls = await AudioCall.find({
-    participants: { $all: [user_id] },
-  }).populate("from to");
+  const data = [...audio.map((c) => toLog(c, "audio")), ...video.map((c) => toLog(c, "video"))]
+    .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
+    .slice(0, 100);
 
-  const video_calls = await VideoCall.find({
-    participants: { $all: [user_id] },
-  }).populate("from to");
+  res.status(200).json({ status: "success", data });
+});
 
-  console.log(audio_calls, video_calls);
 
-  for (let elm of audio_calls) {
-    const missed = elm.verdict !== "Accepted";
-    if (elm.from._id.toString() === user_id.toString()) {
-      const other_user = elm.to;
+// ----------------------------------------------------------------------
+// Blocking
 
-      // outgoing
-      call_logs.push({
-        id: elm._id,
-        img: other_user.avatar,
-        name: other_user.firstName,
-        online: true,
-        incoming: false,
-        missed,
-      });
-    } else {
-      // incoming
-      const other_user = elm.from;
+exports.getBlocked = catchAsync(async (req, res) => {
+  const me = await User.findById(req.user._id).populate("blocked", "_id firstName lastName avatar");
+  res.status(200).json({ status: "success", data: me.blocked });
+});
 
-      // outgoing
-      call_logs.push({
-        id: elm._id,
-        img: other_user.avatar,
-        name: other_user.firstName,
-        online: true,
-        incoming: false,
-        missed,
-      });
-    }
+exports.blockUser = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  if (!mongoose.isValidObjectId(userId) || String(userId) === String(req.user._id)) {
+    throw new AppError("A valid user is required.", 400, "VALIDATION_ERROR");
   }
-
-  for (let element of video_calls) {
-    const missed = element.verdict !== "Accepted";
-    if (element.from._id.toString() === user_id.toString()) {
-      const other_user = element.to;
-
-      // outgoing
-      call_logs.push({
-        id: element._id,
-        img: other_user.avatar,
-        name: other_user.firstName,
-        online: true,
-        incoming: false,
-        missed,
-      });
-    } else {
-      // incoming
-      const other_user = element.from;
-
-      // outgoing
-      call_logs.push({
-        id: element._id,
-        img: other_user.avatar,
-        name: other_user.firstName,
-        online: true,
-        incoming: false,
-        missed,
-      });
-    }
-  }
-
-  res.status(200).json({
-    status: "success",
-    message: "Call Logs Found successfully!",
-    data: call_logs,
+  if (!(await User.exists({ _id: userId }))) throw new AppError("User not found.", 404, "NOT_FOUND");
+  await User.updateOne({ _id: req.user._id }, { $addToSet: { blocked: userId } });
+  // Pending requests between the two are dropped.
+  await FriendRequest.deleteMany({
+    $or: [
+      { sender: req.user._id, recipient: userId },
+      { sender: userId, recipient: req.user._id },
+    ],
   });
+  res.status(200).json({ status: "success", message: "User blocked." });
+});
+
+exports.unblockUser = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  if (!mongoose.isValidObjectId(userId)) {
+    throw new AppError("A valid user is required.", 400, "VALIDATION_ERROR");
+  }
+  await User.updateOne({ _id: req.user._id }, { $pull: { blocked: userId } });
+  res.status(200).json({ status: "success", message: "User unblocked." });
+});
+
+// ----------------------------------------------------------------------
+// Settings and data export
+
+const NOTIFICATION_KEYS = ["messages", "groups", "calls", "activity", "preview", "sound"];
+const WALLPAPERS = ["default", "plain", "sky", "mint", "sand", "rose", "night"];
+
+exports.updateSettings = catchAsync(async (req, res) => {
+  const update = {};
+  const notifications = req.body?.notifications;
+  if (notifications && typeof notifications === "object") {
+    for (const key of NOTIFICATION_KEYS) {
+      if (typeof notifications[key] === "boolean") update[`settings.notifications.${key}`] = notifications[key];
+    }
+  }
+  if (req.body?.wallpaper !== undefined) {
+    if (!WALLPAPERS.includes(req.body.wallpaper)) {
+      throw new AppError("Unknown wallpaper.", 400, "VALIDATION_ERROR");
+    }
+    update["settings.wallpaper"] = req.body.wallpaper;
+  }
+  if (!Object.keys(update).length) throw new AppError("Nothing to update.", 400, "VALIDATION_ERROR");
+  const user = await User.findByIdAndUpdate(req.user._id, { $set: update }, { new: true });
+  res.status(200).json({ status: "success", message: "Settings saved.", data: user.settings });
+});
+
+// Everything the app stores about the user, as a JSON download.
+exports.exportMyData = catchAsync(async (req, res) => {
+  const me = String(req.user._id);
+  const [user, conversations, groups, audio, video] = await Promise.all([
+    User.findById(me).populate("friends blocked", "firstName lastName email"),
+    OneToOneMessage.find({ participants: me }).populate("participants", "firstName lastName email"),
+    Group.find({ members: me }).populate("members", "firstName lastName"),
+    AudioCall.find({ participants: me }).select("from to verdict status startedAt endedAt"),
+    VideoCall.find({ participants: me }).select("from to verdict status startedAt endedAt"),
+  ]);
+  const myMessages = (chat) =>
+    chat.messages
+      .filter((m) => String(m.from) === me && !m.deletedForEveryone)
+      .map((m) => ({ sent_at: m.created_at, type: m.type, text: m.text, file: m.file }));
+
+  const data = {
+    exported_at: new Date().toISOString(),
+    profile: {
+      id: me,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      about: user.about,
+      createdAt: user.createdAt,
+      settings: user.settings,
+    },
+    friends: user.friends.map((f) => ({ name: `${f.firstName} ${f.lastName}`, email: f.email })),
+    blocked: user.blocked.map((b) => ({ name: `${b.firstName} ${b.lastName}` })),
+    conversations: conversations.map((c) => ({
+      with: c.participants.filter((p) => String(p._id) !== me).map((p) => `${p.firstName} ${p.lastName}`),
+      messages_sent: myMessages(c),
+    })),
+    groups: groups.map((g) => ({ name: g.name, messages_sent: myMessages(g) })),
+    calls: [...audio.map((c) => ({ type: "audio", ...c.toObject() })), ...video.map((c) => ({ type: "video", ...c.toObject() }))],
+  };
+  res.setHeader("Content-Disposition", `attachment; filename="chat-app-data-${me}.json"`);
+  res.status(200).json(data);
+});
+
+
+// ----------------------------------------------------------------------
+// Notification centre
+
+exports.getNotifications = catchAsync(async (req, res) => {
+  const limit = Number(req.query.limit) || 50;
+  const data = await listNotifications(req.user._id, { limit });
+  res.status(200).json({ status: "success", data });
+});
+
+// Body: { ids: [...] } marks those read; no ids marks everything read.
+exports.markNotificationsRead = catchAsync(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((id) => mongoose.isValidObjectId(id)) : null;
+  const filter = { user: req.user._id, read: false, ...(ids ? { _id: { $in: ids } } : {}) };
+  await Notification.updateMany(filter, { read: true });
+  const unread = await Notification.countDocuments({ user: req.user._id, read: false });
+  res.status(200).json({ status: "success", data: { unread } });
+});
+
+exports.clearNotifications = catchAsync(async (req, res) => {
+  await Notification.deleteMany({ user: req.user._id });
+  res.status(200).json({ status: "success", message: "Notifications cleared." });
+});
+
+// ----------------------------------------------------------------------
+// Web Push subscriptions
+
+exports.getPushPublicKey = catchAsync(async (req, res) => {
+  if (!isPushConfigured()) {
+    throw new AppError("Push notifications are not configured on the server.", 503, "PUSH_NOT_CONFIGURED");
+  }
+  res.status(200).json({ status: "success", data: { publicKey: process.env.VAPID_PUBLIC_KEY } });
+});
+
+exports.subscribePush = catchAsync(async (req, res) => {
+  const { endpoint, keys } = req.body?.subscription || {};
+  if (
+    typeof endpoint !== "string" ||
+    !/^https:\/\//.test(endpoint) ||
+    endpoint.length > 2048 ||
+    typeof keys?.p256dh !== "string" ||
+    typeof keys?.auth !== "string"
+  ) {
+    throw new AppError("A valid push subscription is required.", 400, "VALIDATION_ERROR");
+  }
+  // An endpoint belongs to one browser; re-assign it if another user signs in there.
+  await PushSubscription.findOneAndUpdate(
+    { endpoint },
+    {
+      user: req.user._id,
+      platform: "web",
+      endpoint,
+      keys: { p256dh: keys.p256dh, auth: keys.auth },
+      userAgent: String(req.get("user-agent") || "").slice(0, 512),
+      lastUsedAt: new Date(),
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+  res.status(200).json({ status: "success", message: "Push notifications enabled on this device." });
+});
+
+exports.unsubscribePush = catchAsync(async (req, res) => {
+  const endpoint = req.body?.endpoint;
+  if (typeof endpoint === "string") {
+    await PushSubscription.deleteOne({ endpoint, user: req.user._id });
+  }
+  res.status(200).json({ status: "success", message: "Push notifications disabled on this device." });
 });

@@ -20,6 +20,9 @@ const userSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, "Email is required"],
+    trim: true,
+    lowercase: true,
+    unique: true,
     validate: {
       validator: function (email) {
         return String(email)
@@ -32,16 +35,16 @@ const userSchema = new mongoose.Schema({
     },
   },
   password: {
-    // unselect
     type: String,
+    select: false,
   },
   passwordChangedAt: {
     // unselect
     type: Date,
   },
   passwordResetToken: {
-    // unselect
     type: String,
+    select: false,
   },
   passwordResetExpires: {
     // unselect
@@ -49,7 +52,7 @@ const userSchema = new mongoose.Schema({
   },
   createdAt: {
     type: Date,
-    default: Date.now(),
+    default: Date.now,
   },
   updatedAt: {
     // unselect
@@ -61,9 +64,24 @@ const userSchema = new mongoose.Schema({
   },
   otp: {
     type: String,
+    select: false,
   },
   otp_expiry_time: {
     type: Date,
+  },
+  // Failed verification attempts for the current OTP.
+  otp_attempts: {
+    type: Number,
+    default: 0,
+  },
+  otp_last_sent_at: {
+    type: Date,
+  },
+  // Embedded in access tokens; incrementing it invalidates every issued access
+  // token immediately (password change/reset, logout everywhere).
+  tokenVersion: {
+    type: Number,
+    default: 0,
   },
   friends: [
     {
@@ -71,45 +89,65 @@ const userSchema = new mongoose.Schema({
       ref: "User",
     },
   ],
+  // Users this user has blocked: no messages, requests or calls either way.
+  blocked: [
+    {
+      type: mongoose.Schema.ObjectId,
+      ref: "User",
+    },
+  ],
+  settings: {
+    notifications: {
+      messages: { type: Boolean, default: true },
+      groups: { type: Boolean, default: true },
+      calls: { type: Boolean, default: true },
+      // Friend requests, accepted requests, group invites.
+      activity: { type: Boolean, default: true },
+      preview: { type: Boolean, default: true },
+      sound: { type: Boolean, default: true },
+    },
+    wallpaper: { type: String, default: "default", maxlength: 32 },
+  },
   socket_id: {
     type: String
   },
   status: {
     type: String,
     enum: ["Online", "Offline"]
+  },
+  // When the user last disconnected (for "last seen").
+  lastSeen: {
+    type: Date,
   }
 });
 
-userSchema.pre("save", async function (next) {
+userSchema.pre("save", async function () {
   // Only run this function if password was actually modified
-  if (!this.isModified("otp") || !this.otp) return next();
+  if (!this.isModified("otp") || !this.otp) return;
 
   // Hash the otp with cost of 12
   this.otp = await bcrypt.hash(this.otp.toString(), 12);
 
   // console.log(this.otp.toString(), "FROM PRE SAVE HOOK");
 
-  next();
 });
 
-userSchema.pre("save", async function (next) {
+userSchema.pre("save", async function () {
   // Only run this function if password was actually modified
-  if (!this.isModified("password") || !this.password) return next();
+  if (!this.isModified("password") || !this.password) return;
 
   // Hash the password with cost of 12
-  this.password = await bcrypt.hash(this.password, 12);
+  this.password = await bcrypt.hash(this.password, Number(process.env.BCRYPT_ROUNDS) || 12);
 
   //! Shift it to next hook // this.passwordChangedAt = Date.now() - 1000;
 
-  next();
 });
 
-userSchema.pre("save", function (next) {
+userSchema.pre("save", function () {
   if (!this.isModified("password") || this.isNew || !this.password)
-    return next();
+    return;
 
   this.passwordChangedAt = Date.now() - 1000;
-  next();
 });
 
 userSchema.methods.correctPassword = async function (
@@ -149,5 +187,26 @@ userSchema.methods.createPasswordResetToken = function () {
   return resetToken;
 };
 
-const User = new mongoose.model("User", userSchema);
+// Never serialise secrets, even when a full document is sent with res.json or
+// over Socket.IO.
+const SENSITIVE_FIELDS = [
+  "password",
+  "passwordChangedAt",
+  "passwordResetToken",
+  "passwordResetExpires",
+  "otp",
+  "otp_expiry_time",
+  "otp_attempts",
+  "otp_last_sent_at",
+  "tokenVersion",
+  "socket_id",
+  "__v",
+];
+const hideSensitive = (doc, ret) => {
+  for (const field of SENSITIVE_FIELDS) delete ret[field];
+  return ret;
+};
+userSchema.set("toJSON", { transform: hideSensitive });
+
+const User = mongoose.model("User", userSchema);
 module.exports = User;

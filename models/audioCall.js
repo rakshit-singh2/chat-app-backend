@@ -23,14 +23,19 @@ const audioCallSchema = new mongoose.Schema({
     type: String,
     enum: ["Ongoing", "Ended"],
   },
+  provider: {
+    type: String,
+    enum: ["AGORA", "MEDIASOUP"],
+    default: "AGORA",
+  },
   startedAt: {
     type: Date,
-    default: Date.now(),
+    default: Date.now,
   },
   endedAt: {
     type: Date,
   },
 });
 
-const AudioCall = new mongoose.model("AudioCall", audioCallSchema);
+const AudioCall = mongoose.model("AudioCall", audioCallSchema);
 module.exports = AudioCall;

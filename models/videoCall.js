@@ -23,6 +23,11 @@ const videoCallSchema = new mongoose.Schema({
     type: String,
     enum: ["Ongoing", "Ended"],
   },
+  provider: {
+    type: String,
+    enum: ["AGORA", "MEDIASOUP"],
+    default: "AGORA",
+  },
   startedAt: {
     type: Date,
     default: Date.now(),
@@ -32,5 +37,5 @@ const videoCallSchema = new mongoose.Schema({
   },
 });
 
-const VideoCall = new mongoose.model("VideoCall", videoCallSchema);
+const VideoCall = mongoose.model("VideoCall", videoCallSchema);
 module.exports = VideoCall;

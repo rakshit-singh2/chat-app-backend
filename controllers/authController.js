@@ -1,495 +1,342 @@
-const jwt = require("jsonwebtoken");
-const otpGenerator = require("otp-generator");
-const mailService = require("../services/mailer");
+"use strict";
+
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 
-const filterObj = require("../utils/filterObj");
-
-// Model
+const mailService = require("../services/mailer");
 const User = require("../models/user");
-const otp = require("../Templates/Mail/otp");
-const resetPassword = require("../Templates/Mail/resetPassword");
-const { promisify } = require("util");
+const Session = require("../models/session");
+const PushSubscription = require("../models/pushSubscription");
+const otpTemplate = require("../Templates/Mail/otp");
+const resetPasswordTemplate = require("../Templates/Mail/resetPassword");
 const catchAsync = require("../utils/catchAsync");
+const AppError = require("../utils/AppError");
+const { validatePassword } = require("../utils/passwordPolicy");
+const {
+  AuthTokenError,
+  createSessionService,
+  verifyAccessToken,
+} = require("../services/tokenService");
+const {
+  clearRefreshCookie,
+  getClientType,
+  getRequestMeta,
+  readRefreshToken,
+  sendTokens,
+} = require("../utils/authResponse");
 
-// this function will return you jwt token
-const signToken = (userId) => jwt.sign({ userId }, process.env.JWT_SECRET);
-
-// Register New User
-/**
- * @swagger
- * /auth/register:
- *   post:
- *     summary: Register a new user
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               firstName:
- *                 type: string
- *               lastName:
- *                 type: string
- *               email:
- *                 type: string
- *               password:
- *                 type: string
- *             required:
- *               - firstName
- *               - lastName
- *               - email
- *               - password
- *     responses:
- *       201:
- *         description: User registered successfully, OTP sent
- *       400:
- *         description: Email already in use
- */
-exports.register = catchAsync(async (req, res, next) => {
-  const { firstName, lastName, email, password } = req.body; //used in filtered body
-
-  const filteredBody = filterObj(
-    req.body,
-    "firstName",
-    "lastName",
-    "email",
-    "password"
-  );
-
-  // check if a verified user with given email exists
-
-  const existing_user = await User.findOne({ email: email });
-
-  if (existing_user && existing_user.verified) {
-    // user with this email already exists, Please login
-    return res.status(400).json({
-      status: "error",
-      message: "Email already in use, Please login.",
-    });
-  } else if (existing_user) {
-    if (filteredBody.password) {
-      filteredBody.password = await bcrypt.hash(filteredBody.password, 12);
-    }
-    // if not verified than update prev one
-    await User.findOneAndUpdate({ email: email }, filteredBody, {
-      new: true,
-      validateModifiedOnly: true,
-    });
-
-    // generate an otp and send to email
-    req.userId = existing_user._id;
-    next();
-  } else {
-    // if user is not created before than create a new one
-    const new_user = await User.create(filteredBody);
-
-    // generate an otp and send to email
-    req.userId = new_user._id;
-    next();
-  }
+const sessions = createSessionService(Session, async (userId) => {
+  const user = await User.findById(userId).select("tokenVersion");
+  return user?.tokenVersion ?? 0;
 });
-/**
- * @swagger
- * /auth/send-otp:
- *   post:
- *     summary: Send OTP for user verification
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               userId:
- *                 type: string
- *                 description: The user ID for whom the OTP is being sent
- *                 example: "60f71b84f16b8c3a3cf7a8d3"
- *     responses:
- *       200:
- *         description: OTP sent successfully
- *       400:
- *         description: Invalid input
- *       404:
- *         description: User not found
- */
-exports.sendOTP = catchAsync(async (req, res, next) => {
-  const userId = req.userId ?? req.body.userId;//
 
-  if (!userId) {
-    return res.status(400).json({
-      status: "fail",
-      message: "User ID is missing",
-    });
+// Revoke every refresh token and invalidate every access token of a user.
+async function signOutEverywhere(req, userId) {
+  await User.updateOne({ _id: userId }, { $inc: { tokenVersion: 1 } });
+  await sessions.revokeAllSessions(userId);
+  // Signed-out devices must stop receiving message previews.
+  await PushSubscription.deleteMany({ user: userId });
+  disconnectUserSockets(req, userId);
+}
+
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+
+// Used so a login for an unknown email takes as long as a real bcrypt check.
+const DUMMY_HASH = bcrypt.hashSync("timing-equaliser-not-a-password", 12);
+
+const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const normaliseEmail = (email) => (typeof email === "string" ? email.trim().toLowerCase() : "");
+const isNonEmptyString = (value) => typeof value === "string" && value.trim().length > 0;
+
+function requireFields(body, fields) {
+  const missing = fields.filter((field) => !isNonEmptyString(body?.[field]));
+  if (missing.length) {
+    throw new AppError(`Missing required fields: ${missing.join(", ")}.`, 400, "VALIDATION_ERROR");
   }
-  const new_otp = otpGenerator.generate(6, {
-    upperCaseAlphabets: false,
-    specialChars: false,
-    lowerCaseAlphabets: false,
-  });
+}
 
-  const otp_expiry_time = Date.now() + 10 * 60 * 1000; // 10 Mins after otp is sent
+function assertValidPassword(password) {
+  const problem = validatePassword(password);
+  if (problem) throw new AppError(problem, 400, "WEAK_PASSWORD");
+}
 
-  const user = await User.findByIdAndUpdate(userId, {
-    otp_expiry_time: otp_expiry_time,
-  });
+// Disconnect every live socket of a user (after logout-all or a password change).
+function disconnectUserSockets(req, userId) {
+  req.app.get("io")?.in(String(userId)).disconnectSockets(true);
+}
 
-  user.otp = new_otp.toString();
+async function sendOtpEmail(user) {
+  const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+  user.otp = code; // hashed by the User pre-save hook
+  user.otp_expiry_time = new Date(Date.now() + OTP_TTL_MS);
+  user.otp_attempts = 0;
+  user.otp_last_sent_at = new Date();
+  await user.save({ validateModifiedOnly: true });
 
-  await user.save({ new: true, validateModifiedOnly: true });
-
-  // console.log(new_otp);
-
-  // TODO send mail
-  mailService.sendEmail({
-    from: "a2fsharma@gmail.com",
+  await mailService.sendEmail({
     to: user.email,
     subject: "Verification OTP",
-    html: otp(user.firstName, new_otp),
+    html: otpTemplate(user.firstName, code),
     attachments: [],
   });
+}
+
+const otpCooldownActive = (user) =>
+  user.otp_last_sent_at && Date.now() - user.otp_last_sent_at.getTime() < OTP_RESEND_COOLDOWN_MS;
+
+// ----------------------------------------------------------------------
+// Registration and email verification
+
+exports.register = catchAsync(async (req, res) => {
+  requireFields(req.body, ["firstName", "lastName", "email", "password"]);
+  const { firstName, lastName, password } = req.body;
+  const email = normaliseEmail(req.body.email);
+  assertValidPassword(password);
+
+  let user = await User.findOne({ email });
+  if (user?.verified) {
+    throw new AppError("Email already in use. Please log in.", 409, "EMAIL_IN_USE");
+  }
+
+  if (user) {
+    // Unverified account: let the owner of the inbox start over.
+    user.firstName = firstName.trim();
+    user.lastName = lastName.trim();
+    user.password = password; // hashed by the pre-save hook
+  } else {
+    user = new User({ firstName: firstName.trim(), lastName: lastName.trim(), email, password });
+  }
+  await user.save();
+
+  if (!otpCooldownActive(user)) await sendOtpEmail(user);
+
+  res.status(201).json({
+    status: "success",
+    message: "Account created. We sent a verification code to your email.",
+    email,
+  });
+});
+
+// Resend a verification code. The response never reveals whether the email exists.
+exports.sendOTP = catchAsync(async (req, res) => {
+  requireFields(req.body, ["email"]);
+  const user = await User.findOne({ email: normaliseEmail(req.body.email) });
+  if (user && !user.verified && !otpCooldownActive(user)) await sendOtpEmail(user);
 
   res.status(200).json({
     status: "success",
-    message: "OTP Sent Successfully!",
+    message: "If an unverified account exists for this email, a new code has been sent.",
   });
 });
 
-/**
- * @swagger
- * /auth/verify:
- *   post:
- *     summary: Verify OTP for registration
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               email:
- *                 type: string
- *               otp:
- *                 type: string
- *             required:
- *               - email
- *               - otp
- *     responses:
- *       200:
- *         description: OTP verified successfully, user registered
- *       400:
- *         description: OTP expired or incorrect
- */
-exports.verifyOTP = catchAsync(async (req, res, next) => {
-  // verify otp and update user accordingly
-  const { email, otp } = req.body;
-  const user = await User.findOne({
-    email,
-    otp_expiry_time: { $gt: Date.now() },
-  });
+exports.verifyOTP = catchAsync(async (req, res) => {
+  requireFields(req.body, ["email", "otp"]);
+  const user = await User.findOne({ email: normaliseEmail(req.body.email) }).select("+otp");
+  const invalid = new AppError("The code is invalid or has expired.", 400, "OTP_INVALID");
 
-  if (!user) {
-    return res.status(400).json({
-      status: "error",
-      message: "Email is invalid or OTP expired",
-    });
+  if (!user || user.verified || !user.otp || !user.otp_expiry_time) throw invalid;
+  if (user.otp_expiry_time.getTime() <= Date.now()) {
+    throw new AppError("The code has expired. Please request a new one.", 400, "OTP_EXPIRED");
+  }
+  if (user.otp_attempts >= OTP_MAX_ATTEMPTS) {
+    throw new AppError("Too many incorrect attempts. Please request a new code.", 429, "OTP_LOCKED");
   }
 
-  if (user.verified) {
-    return res.status(400).json({
-      status: "error",
-      message: "Email is already verified",
-    });
+  if (!(await user.correctOTP(String(req.body.otp), user.otp))) {
+    await User.updateOne({ _id: user._id }, { $inc: { otp_attempts: 1 } });
+    throw invalid;
   }
-
-  if (!(await user.correctOTP(otp, user.otp))) {
-    res.status(400).json({
-      status: "error",
-      message: "OTP is incorrect",
-    });
-
-    return;
-  }
-
-  // OTP is correct
 
   user.verified = true;
   user.otp = undefined;
-  await user.save({ new: true, validateModifiedOnly: true });
+  user.otp_expiry_time = undefined;
+  user.otp_attempts = 0;
+  await user.save({ validateModifiedOnly: true });
 
-  const token = signToken(user._id);
-
-  res.status(200).json({
-    status: "success",
-    message: "OTP verified Successfully!",
-    token,
-    user_id: user._id,
-  });
+  const tokens = await sessions.issueSession(user._id, getRequestMeta(req));
+  sendTokens(req, res, { tokens, userId: user._id, message: "Email verified successfully!" });
 });
 
-// User Login
+// ----------------------------------------------------------------------
+// Login, token refresh and logout
 
-/**
- * @swagger
- * /auth/login:
- *   post:
- *     summary: Log in a user
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               email:
- *                 type: string
- *               password:
- *                 type: string
- *             required:
- *               - email
- *               - password
- *     responses:
- *       200:
- *         description: Successfully logged in
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 message:
- *                   type: string
- *                 token:
- *                   type: string
- *                 user_id:
- *                   type: string
- *       400:
- *         description: Email or password is incorrect
- */
+exports.login = catchAsync(async (req, res) => {
+  requireFields(req.body, ["email", "password"]);
+  const email = normaliseEmail(req.body.email);
+  const user = await User.findOne({ email }).select("+password");
 
-exports.login = catchAsync(async (req, res, next) => {
-  const { email, password } = req.body;
-
-  // console.log(email, password);
-
-  if (!email || !password) {
-    res.status(400).json({
-      status: "error",
-      message: "Both email and password are required",
-    });
-    return;
+  const passwordOk = await bcrypt.compare(String(req.body.password), user?.password || DUMMY_HASH);
+  if (!user || !user.password || !passwordOk) {
+    throw new AppError("Email or password is incorrect.", 401, "INVALID_CREDENTIALS");
   }
 
-  const user = await User.findOne({ email: email }).select("+password");
-
-  if (!user || !user.password) {
-    res.status(400).json({
-      status: "error",
-      message: "Incorrect password",
+  if (!user.verified) {
+    if (!otpCooldownActive(user)) await sendOtpEmail(user);
+    return res.status(403).json({
+      status: "fail",
+      code: "EMAIL_NOT_VERIFIED",
+      message: "Please verify your email. We sent you a verification code.",
+      email,
     });
-
-    return;
   }
 
-  if (!user || !(await user.correctPassword(password, user.password))) {
-    res.status(400).json({
-      status: "error",
-      message: "Email or password is incorrect",
-    });
-
-    return;
-  }
-
-  const token = signToken(user._id);
-
-  res.status(200).json({
-    status: "success",
-    message: "Logged in successfully!",
-    token,
-    user_id: user._id,
-  });
+  const tokens = await sessions.issueSession(user._id, getRequestMeta(req));
+  sendTokens(req, res, { tokens, userId: user._id, message: "Logged in successfully!" });
 });
 
-// Protect
+exports.refresh = catchAsync(async (req, res) => {
+  // Cookie-based refresh must come from an allowed browser origin (CSRF defence).
+  const origin = req.get("origin");
+  if (getClientType(req) === "web" && origin && !allowedOrigins.includes(origin)) {
+    throw new AppError("Origin not allowed.", 403, "ORIGIN_NOT_ALLOWED");
+  }
+
+  try {
+    const tokens = await sessions.rotateSession(readRefreshToken(req), {
+      userAgent: req.get("user-agent"),
+      ip: req.ip,
+    });
+    const user = await User.findById(tokens.userId).select("_id verified");
+    if (!user?.verified) {
+      await sessions.revokeSession(tokens.refreshToken);
+      throw new AuthTokenError("Account is not available.", "REFRESH_INVALID");
+    }
+    sendTokens(req, res, { tokens, userId: user._id, message: "Token refreshed." });
+  } catch (error) {
+    if (error instanceof AuthTokenError) clearRefreshCookie(res);
+    throw error;
+  }
+});
+
+// Works with an expired access token: the refresh token identifies the session.
+exports.logout = catchAsync(async (req, res) => {
+  await sessions.revokeSession(readRefreshToken(req));
+  clearRefreshCookie(res);
+  res.status(200).json({ status: "success", message: "Logged out." });
+});
+
+exports.logoutAll = catchAsync(async (req, res) => {
+  await signOutEverywhere(req, req.user._id);
+  clearRefreshCookie(res);
+  res.status(200).json({ status: "success", message: "Logged out of all devices." });
+});
+
+// ----------------------------------------------------------------------
+// Route protection
+
 exports.protect = catchAsync(async (req, res, next) => {
-  // 1) Getting token and check if it's there
-  // console.log("req.headers.authorization",req.headers.authorization)
-  let token;
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer")
-  ) {
-    // console.log("req.headers.authorization",req.headers.authorization)
-    token = req.headers.authorization.split(" ")[1];
-  } else if (req.cookies.jwt) {
-    token = req.cookies.jwt;
+  const header = req.get("authorization") || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
+  const { userId, tokenVersion } = verifyAccessToken(token);
+
+  const user = await User.findById(userId);
+  if (!user || !user.verified) {
+    throw new AuthTokenError("The account for this token no longer exists.", "TOKEN_INVALID");
+  }
+  if ((user.tokenVersion ?? 0) !== tokenVersion) {
+    throw new AuthTokenError("Session ended. Please log in again.", "TOKEN_INVALID");
   }
 
-  if (!token) {
-    return res.status(401).json({
-      message: "You are not logged in! Please log in to get access.",
-    });
-  }
-  // 2) Verification of token
-  const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
-
-  // console.log(decoded);
-
-  // 3) Check if user still exists
-
-  const this_user = await User.findById(decoded.userId);
-  if (!this_user) {
-    return res.status(401).json({
-      message: "The user belonging to this token does no longer exists.",
-    });
-  }
-  // 4) Check if user changed password after the token was issued
-  if (this_user.changedPasswordAfter(decoded.iat)) {
-    return res.status(401).json({
-      message: "User recently changed password! Please log in again.",
-    });
-  }
-
-  // GRANT ACCESS TO PROTECTED ROUTE
-  req.user = this_user;
+  req.user = user;
   next();
 });
 
+// ----------------------------------------------------------------------
+// Password reset and change
 
-/**
- * @swagger
- * /auth/forgot-password:
- *   post:
- *     summary: Send a password reset link
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               email:
- *                 type: string
- *     responses:
- *       200:
- *         description: Password reset link sent
- *       404:
- *         description: No user found with this email
- */
-exports.forgotPassword = catchAsync(async (req, res, next) => {
-  // 1) Get user based on POSTed email
-  const user = await User.findOne({ email: req.body.email });
-  if (!user) {
-    return res.status(404).json({
-      status: "error",
-      message: "There is no user with email address.",
-    });
-  }
+function passwordResetUrl(req, token) {
+  const mobileBase = process.env.MOBILE_PASSWORD_RESET_URL;
+  const base =
+    getClientType(req) === "mobile" && mobileBase
+      ? mobileBase
+      : process.env.PASSWORD_RESET_URL || `${allowedOrigins[0]}/auth/new-password`;
+  const url = new URL(base);
+  url.searchParams.set("token", token);
+  return url.toString();
+}
 
-  // 2) Generate the random reset token
-  const resetToken = user.createPasswordResetToken();
-  await user.save({ validateBeforeSave: false });
+exports.forgotPassword = catchAsync(async (req, res) => {
+  requireFields(req.body, ["email"]);
+  const user = await User.findOne({ email: normaliseEmail(req.body.email), verified: true });
 
-  // 3) Send it to user's email
-  try {
-    const resetURL = `http://localhost:5173/auth/new-password?token=${resetToken}`;
-    // TODO => Send Email with this Reset URL to user's email address
-
-    // console.log(resetURL);
-
-    mailService.sendEmail({
-      from: "a2fsharma@gmail.com",
-      to: user.email,
-      subject: "Reset Password",
-      html: resetPassword(user.firstName, resetURL),
-      attachments: [],
-    });
-
-    res.status(200).json({
-      status: "success",
-      message: "Token sent to email!",
-    });
-  } catch (err) {
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
+  if (user) {
+    const resetToken = user.createPasswordResetToken();
     await user.save({ validateBeforeSave: false });
-
-    return res.status(500).json({
-      message: "There was an error sending the email. Try again later!",
-    });
+    try {
+      await mailService.sendEmail({
+        to: user.email,
+        subject: "Reset Password",
+        html: resetPasswordTemplate(user.firstName, passwordResetUrl(req, resetToken)),
+        attachments: [],
+      });
+    } catch (error) {
+      user.passwordResetToken = undefined;
+      user.passwordResetExpires = undefined;
+      await user.save({ validateBeforeSave: false });
+      throw new AppError("We could not send the email. Please try again later.", 502, "EMAIL_FAILED");
+    }
   }
+
+  // Same answer whether or not the account exists.
+  res.status(200).json({
+    status: "success",
+    message: "If an account exists for this email, a password reset link has been sent.",
+  });
 });
 
+exports.resetPassword = catchAsync(async (req, res) => {
+  requireFields(req.body, ["token", "password"]);
+  const { password, passwordConfirm } = req.body;
+  if (passwordConfirm !== undefined && passwordConfirm !== password) {
+    throw new AppError("Passwords do not match.", 400, "PASSWORD_MISMATCH");
+  }
+  assertValidPassword(password);
 
-/**
- * @swagger
- * /auth/reset-password:
- *   post:
- *     summary: Reset user password using token
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               token:
- *                 type: string
- *               password:
- *                 type: string
- *               passwordConfirm:
- *                 type: string
- *             required:
- *               - token
- *               - password
- *               - passwordConfirm
- *     responses:
- *       200:
- *         description: Password reset successfully
- *       400:
- *         description: Token is invalid or expired
- */
-exports.resetPassword = catchAsync(async (req, res, next) => {
-  // 1) Get user based on the token
-  const hashedToken = crypto
-    .createHash("sha256")
-    .update(req.body.token)
-    .digest("hex");
-
+  const hashedToken = crypto.createHash("sha256").update(req.body.token).digest("hex");
   const user = await User.findOne({
     passwordResetToken: hashedToken,
     passwordResetExpires: { $gt: Date.now() },
   });
-
-  // 2) If token has not expired, and there is user, set the new password
   if (!user) {
-    return res.status(400).json({
-      status: "error",
-      message: "Token is Invalid or Expired",
-    });
+    throw new AppError("The reset link is invalid or has expired.", 400, "RESET_TOKEN_INVALID");
   }
-  user.password = req.body.password;
-  user.passwordConfirm = req.body.passwordConfirm;
+
+  user.password = password;
   user.passwordResetToken = undefined;
   user.passwordResetExpires = undefined;
   await user.save();
 
-  // 3) Update changedPasswordAt property for the user
-  // 4) Log the user in, send JWT
-  const token = signToken(user._id);
+  await signOutEverywhere(req, user._id);
 
-  res.status(200).json({
-    status: "success",
-    message: "Password Reseted Successfully",
-    token,
-  });
+  const tokens = await sessions.issueSession(user._id, getRequestMeta(req));
+  sendTokens(req, res, { tokens, userId: user._id, message: "Password reset successfully." });
 });
+
+exports.changePassword = catchAsync(async (req, res) => {
+  requireFields(req.body, ["currentPassword", "newPassword"]);
+  const { currentPassword, newPassword } = req.body;
+  assertValidPassword(newPassword);
+
+  const user = await User.findById(req.user._id).select("+password");
+  if (!(await user.correctPassword(currentPassword, user.password))) {
+    throw new AppError("Current password is incorrect.", 401, "INVALID_CREDENTIALS");
+  }
+  if (currentPassword === newPassword) {
+    throw new AppError("New password must be different.", 400, "PASSWORD_UNCHANGED");
+  }
+
+  user.password = newPassword;
+  await user.save();
+
+  // Sign out every device; this one gets a fresh session below.
+  await signOutEverywhere(req, user._id);
+  const tokens = await sessions.issueSession(user._id, getRequestMeta(req));
+  sendTokens(req, res, { tokens, userId: user._id, message: "Password changed successfully." });
+});
+
